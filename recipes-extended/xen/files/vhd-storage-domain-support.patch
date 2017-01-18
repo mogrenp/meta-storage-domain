@@ -1,0 +1,86 @@
+From 01af1fbb2dec3747e00865c6f48e79f55ae8c811 Mon Sep 17 00:00:00 2001
+From: paul <paul@paul.com>
+Date: Fri, 14 Oct 2016 14:55:35 -0400
+Subject: [PATCH] Add vhd support to storage-domains
+
+---
+ tools/hotplug/Linux/block     |  9 +++++++++
+ tools/hotplug/Linux/block-tap |  2 +-
+ tools/libxl/libxl.c           | 27 +++++++++++++++++----------
+ 3 files changed, 27 insertions(+), 11 deletions(-)
+
+diff --git a/tools/hotplug/Linux/block b/tools/hotplug/Linux/block
+index 8d2ee9d..67d29ad 100644
+--- a/tools/hotplug/Linux/block
++++ b/tools/hotplug/Linux/block
+@@ -207,6 +207,15 @@ and so cannot be mounted ${m2}${when}."
+ 
+ t=$(xenstore_read_default "$XENBUS_PATH/type" 'MISSING')
+ p=$(xenstore_read "$XENBUS_PATH/params")
++
++if [ "$p" = 'tapdisk device' ]; then
++    [ -x ${XEN_SCRIPT_DIR}/block-tap ] && \
++       ${XEN_SCRIPT_DIR}/block-tap "$command"
++
++    exit
++fi
++
++
+ mode=$(xenstore_read "$XENBUS_PATH/mode")
+ if [ -b "$p" ]; then
+     truetype="phy"
+diff --git a/tools/hotplug/Linux/block-tap b/tools/hotplug/Linux/block-tap
+index 8924792..a168c09 100755
+--- a/tools/hotplug/Linux/block-tap
++++ b/tools/hotplug/Linux/block-tap
+@@ -101,7 +101,7 @@ remove()
+ }
+ 
+ command=$1
+-target=$(xenstore-read $XENBUS_PATH/params || true)
++target=$(xenstore-read $XENBUS_PATH/tapdisk-params || true)
+ if [ -z "$target" ]; then
+     fatal "No information about the target"
+ fi
+diff --git a/tools/libxl/libxl.c b/tools/libxl/libxl.c
+index 18e9d4d..196d0d5 100644
+--- a/tools/libxl/libxl.c
++++ b/tools/libxl/libxl.c
+@@ -2518,17 +2518,24 @@ static void device_disk_add(libxl__egc *egc, uint32_t domid,
+                 break;
+ 
+             case LIBXL_DISK_BACKEND_TAP:
+-                if (dev == NULL) {
+-                    dev = libxl__blktap_devpath(gc, disk->pdev_path,
+-                                                disk->format);
+-                    if (!dev) {
+-                        LOG(ERROR, "failed to get blktap devpath for %p",
+-                            disk->pdev_path);
+-                        rc = ERROR_FAIL;
+-                        goto out;
+-                    }
++               if (dev == NULL) {
++                   if(disk->backend_domid != LIBXL_TOOLSTACK_DOMID) {
++                       LOG(DEBUG, "backend domain specified, allowing devd scripts to handle hotplug event");
++                       dev = "tapdisk device";
++                   }
++                   else {
++                        dev = libxl__blktap_devpath(gc, disk->pdev_path,
++                                               disk->format);
++                        if (!dev) {
++                            LOG(ERROR, "failed to get blktap devpath for %p",
++                                disk->pdev_path);
++                            rc = ERROR_FAIL;
++                            goto out;
++                        }
++                   }
+                 }
+-                flexarray_append(back, "tapdisk-params");
++                
++		flexarray_append(back, "tapdisk-params");
+                 flexarray_append(back, libxl__sprintf(gc, "%s:%s",
+                     libxl__device_disk_string_of_format(disk->format),
+                     disk->pdev_path));
+-- 
+2.7.4
+
