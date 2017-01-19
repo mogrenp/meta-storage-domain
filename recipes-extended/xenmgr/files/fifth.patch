@@ -1,0 +1,15 @@
+
+
+diff --git a/xenmgr/Main.hs b/xenmgr/Main.hs
+index e814cab..063427c 100644
+--- a/xenmgr/Main.hs
++++ b/xenmgr/Main.hs
+@@ -245,7 +245,7 @@ periodics xm_context rpccontext =
+         ]
+ 
+     checkStorage = do
+-      rpc rpccontext hostCheckFreeStorage
++      --rpc rpccontext hostCheckFreeStorage
+       return ()
+ 
+ hostMonitorIdleness :: XmContext -> Rpc ()

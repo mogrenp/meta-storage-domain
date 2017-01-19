@@ -1,0 +1,24 @@
+
+
+diff --git a/xenmgr/Vm/Queries.hs b/xenmgr/Vm/Queries.hs
+index 3eed48c..8204c65 100644
+--- a/xenmgr/Vm/Queries.hs
++++ b/xenmgr/Vm/Queries.hs
+@@ -89,7 +89,7 @@ module Vm.Queries
+                , getVmShutdownPriority, getVmProvidesGraphicsFallback
+                , getVmSeamlessId, getVmStartFromSuspendImage
+                , getVmQemuDmPath, getVmQemuDmTimeout
+-               , getVmNetworkDependencies, getVmDiskDependencies, getVmDependencies
++               , getVmNetworkDependencies, getVmDiskDependencies, getVmDependencies, getVmDiskBackendUuid
+                , getVmTrackDependencies
+                , getVmSeamlessMouseLeft, getVmSeamlessMouseRight
+                , getVmOs, getVmControlPlatformPowerState, getVmGreedyPcibackBind
+@@ -421,7 +421,7 @@ getVmDiskBackendUuid uuid disk = do
+          do vms <- getVmsBy (\vm -> (== name) <$> getVmName vm)
+             case vms of
+                (uuid:_) -> return $ Just uuid
+-               _        -> return Nothing
++               _        -> if uuid == (fromMaybe domain0uuid default_backend) then return Nothing else return default_backend
+ 
+ getDiskDependencyGraph :: Rpc (DepGraph Uuid)
+ getDiskDependencyGraph =

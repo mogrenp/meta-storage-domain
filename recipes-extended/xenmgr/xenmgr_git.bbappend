@@ -1,5 +1,10 @@
 FILESEXTRAPATHS_prepend := "${THISDIR}/files:"
 
 SRC_URI += " \
-    file://add-manager-support.patch \
+    file://sixth.patch \
+    file://fifth.patch \
+    file://fourth.patch \
+    file://third.patch \
+    file://second.patch \
+    file://first.patch \
 "

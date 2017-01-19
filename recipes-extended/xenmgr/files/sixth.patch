@@ -1,0 +1,480 @@
+
+
+diff --git a/xenmgr/Vm/Actions.hs b/xenmgr/Vm/Actions.hs
+index 20274aa..f1c1ccb 100644
+--- a/xenmgr/Vm/Actions.hs
++++ b/xenmgr/Vm/Actions.hs
+@@ -80,7 +80,7 @@ module Vm.Actions
+           , setVmVideoram, setVmPassthroughMmio, setVmPassthroughIo, setVmFlaskLabel
+           , setVmAmtPt, setVmHap, setVmSmbios, setVmDescription
+           , setVmExtraXenvm, setVmExtraHvm
+-          , setVmStartOnBootPriority, setVmKeepAlive, setVmProvidesNetworkBackend
++          , setVmStartOnBootPriority, setVmKeepAlive, setVmProvidesNetworkBackend, setVmProvidesDiskBackend 
+           , setVmProvidesGraphicsFallback, setVmShutdownPriority, setVmSeamlessId
+           , setVmStartFromSuspendImage, setVmQemuDmPath, setVmQemuDmTimeout, setVmTrackDependencies
+           , setVmSeamlessMouseLeft, setVmSeamlessMouseRight, setVmOs, setVmControlPlatformPowerState
+@@ -103,6 +103,7 @@ module Vm.Actions
+           , setVmDownloadProgress
+           , setVmReady
+           , setVmProvidesDefaultNetworkBackend
++          , setVmProvidesDefaultDiskBackend
+           , setVmVkbd
+           , setVmVfb
+           , setVmV4V
+@@ -583,25 +584,54 @@ startupMeasureVm uuid
+ 
+ startupDependencies :: Uuid -> XM Bool
+ startupDependencies uuid
+-  = do deps <- liftRpc $ getVmTrackDependencies uuid
+-       if deps
++  = do startDiskDependencies uuid
++       checkDiskDependencies uuid
++       net_deps <- liftRpc $ getVmTrackDependencies uuid
++       if net_deps
+          then do
+-           startDependencies uuid
+-           checkDependencies uuid
++           startNetworkDependencies uuid
++           checkNetworkDependencies uuid
+          else do
+            return True
+   where
+-    checkDependencies uuid = liftRpc $ do
+-        missing <- filterM (fmap not . isRunning) =<< (getVmDependencies uuid)
+-        if (null missing)
++    startDiskDependencies uuid =
++        do dependentVms <- liftRpc $ getVmDiskDependencies uuid
++           unless (null dependentVms) $ 
++                info $ "vm disk dependencies: " ++ show dependentVms
++           mapM_ startVm =<< (liftRpc $ filterM (fmap not .isRunning) dependentVms)
++
++    checkDiskDependencies uuid = do
++       dependentVms <- liftRpc $ getVmDiskDependencies uuid
++       if (null dependentVms)
++          then return True
++          else do
++             missing <- filterM (fmap not . isRunning) dependentVms
++             when (null missing) $ warn ("missing disk dependencies: " ++ show missing)
++             running <- filterM isRunning dependentVms
++             mapM waitForDiskDependencies running
++             return True
++ 
++    waitForDiskDependencies uuid = do
++       domid <- fromMaybe (-1) <$> getDomainID uuid
++       ready <- liftIO $ xsRead ("/local/domain/" ++ show domid ++ "/device/storage-ready")
++       case fromMaybe "-1" ready of
++          "1" -> return True
++          "0" -> do liftIO (threadDelay $ 10^6)
++                    waitForDiskDependencies uuid
++          _   -> do error ("Cannot find appropriate xenstore value for disk backend: " ++ show uuid)
++                    return False
++
++    checkNetworkDependencies uuid = liftRpc $ do
++       missing <- filterM (fmap not . isRunning) =<< (getVmNetworkDependencies uuid)
++       if (null missing)
+             then do return True
+-            else do warn $ "missing dependencies: " ++ show missing
++            else do warn $ "missing network dependencies: " ++ show missing
+                     return False
+ 
+-    startDependencies uuid =
+-        do dependentVms <- liftRpc $ getVmDependencies uuid
++    startNetworkDependencies uuid =
++        do dependentVms <- liftRpc $ getVmNetworkDependencies uuid
+            unless (null dependentVms) $
+-                info $ "vm dependencies: " ++ show dependentVms
++                info $ "vm network dependencies: " ++ show dependentVms
+            mapM_ startVm =<< (liftRpc $ filterM (fmap not . isRunning) dependentVms)
+ 
+ startupExtractKernel :: Uuid -> XM Bool
+@@ -876,6 +906,12 @@ bootVm config
+ 
+           --setupBiosStrings uuid
+           setupAcpiNode uuid
++
++          gives_storage <- getVmProvidesDiskBackend uuid
++          when gives_storage $ whenDomainID_ uuid $ \domid -> do
++            liftIO $ xsWrite (domainXSPath domid ++ "/device/storage-ready") "0"
++            liftIO $ xsChmod (domainXSPath domid ++ "/device/storage-ready") ("b" ++ show domid ++ ",r0")
++
+           -- some little network plumbing
+           gives_network <- getVmProvidesNetworkBackend uuid
+           when gives_network $ whenDomainID_ uuid $ \domid -> do
+@@ -1281,6 +1317,9 @@ addDefaultDiskToVm uuid =
+                      , diskManagedType = UnmanagedDisk
+                      , diskShared = False
+                      , diskEnabled = True
++                     , diskBackendName = Nothing
++                     , diskBackendUuid = Nothing
++                     , diskBackendDomid = Nothing
+                      }
+ 
+ --
+@@ -1298,6 +1337,9 @@ addVhdDiskToVm uuid path = do
+                , diskManagedType = UnmanagedDisk
+                , diskShared = False
+                , diskEnabled = True
++               , diskBackendName = Nothing
++               , diskBackendUuid = Nothing
++               , diskBackendDomid = Nothing
+                }
+     addDiskToVm uuid disk
+ 
+@@ -1316,6 +1358,9 @@ addPhyDiskToVm uuid path = do
+                , diskManagedType = UnmanagedDisk
+                , diskShared = False
+                , diskEnabled = True
++               , diskBackendName = Nothing
++               , diskBackendUuid = Nothing
++               , diskBackendDomid = Nothing
+                }
+     addDiskToVm uuid disk
+ 
+@@ -1742,6 +1787,8 @@ setVmSmbios uuid v = saveConfigProperty uuid vmSmbios (v::String)
+ setVmDescription uuid v = saveConfigProperty uuid vmDescription (v::String)
+ setVmStartOnBootPriority uuid v = saveConfigProperty uuid vmStartOnBootPriority (v::Int)
+ setVmKeepAlive uuid v = saveConfigProperty uuid vmKeepAlive (v::Bool)
++setVmProvidesDiskBackend uuid v = saveConfigProperty uuid vmProvidesDiskBackend (v::Bool)
++setVmProvidesDefaultDiskBackend uuid v = saveConfigProperty uuid vmProvidesDefaultDiskBackend (v::Bool)
+ setVmProvidesNetworkBackend uuid v = saveConfigProperty uuid vmProvidesNetworkBackend (v::Bool)
+ setVmProvidesDefaultNetworkBackend uuid v = saveConfigProperty uuid vmProvidesDefaultNetworkBackend (v::Bool)
+ setVmProvidesGraphicsFallback uuid v = saveConfigProperty uuid vmProvidesGraphicsFallback (v::Bool)
+diff --git a/xenmgr/Vm/Config.hs b/xenmgr/Vm/Config.hs
+index 95974cb..37c2c50 100644
+--- a/xenmgr/Vm/Config.hs
++++ b/xenmgr/Vm/Config.hs
+@@ -38,7 +38,7 @@ module Vm.Config (
+ 
+                   -- list of interesting config properties
+                 , vmUuidP, vmName, vmDescription, vmType, vmSlot, vmImagePath, vmPvAddons, vmPvAddonsVersion
+-                , vmStartOnBoot, vmStartOnBootPriority, vmKeepAlive, vmProvidesNetworkBackend, vmTimeOffset
++                , vmStartOnBoot, vmStartOnBootPriority, vmKeepAlive, vmProvidesNetworkBackend, vmProvidesDiskBackend, vmTimeOffset
+                 , vmAmtPt, vmCryptoUser, vmCryptoKeyDirs, vmStartup
+                 , vmNotify, vmHvm, vmPae, vmAcpi, vmApic, vmViridian, vmNx, vmSound, vmMemory, vmHap, vmSmbios
+                 , vmDisplay, vmBoot, vmCmdLine, vmKernel, vmInitrd, vmAcpiPath, vmVcpus, vmGpu
+@@ -71,6 +71,7 @@ module Vm.Config (
+                 , vmIcbinnPath
+                 , vmOvfTransportIso
+                 , vmReady
++                , vmProvidesDefaultDiskBackend
+                 , vmProvidesDefaultNetworkBackend
+                 , vmRestrictDisplayDepth
+                 , vmRestrictDisplayRes
+@@ -215,6 +216,8 @@ instance Marshall Disk where
+                   sha1Sum <- dbRead (x ++ "/sha1sum" )
+                   shared  <- dbReadWithDefault False (x ++ "/shared")
+                   enable  <- dbReadWithDefault True (x ++ "/enable")
++                  bname   <- dbRead (x ++ "/backend-name")
++                  uuid    <- dbRead (x ++ "/backend-uuid")
+                   return $
+                          Disk { diskPath         = path
+                               , diskType         = typ
+@@ -226,6 +229,9 @@ instance Marshall Disk where
+                               , diskShared       = shared
+                               , diskManagedType  = mtyp
+                               , diskEnabled      = enable
++                              , diskBackendName  = bname
++                              , diskBackendUuid  = uuid
++                              , diskBackendDomid = Nothing
+                               }
+     dbWrite x v = do current <- dbRead x
+                      dbWrite (x ++ "/path"    ) (diskPath         v)
+@@ -240,6 +246,8 @@ instance Marshall Disk where
+                      dbWrite (x ++ "/shared" ) (diskShared v)
+                      when (diskEnabled v /= diskEnabled current) $ 
+                        dbWrite (x ++ "/enable") (diskEnabled v)
++                     dbWrite (x ++ "/backend-name") (diskBackendName v)
++                     dbWrite (x ++ "/backend-uuid") (diskBackendUuid v)
+ 
+ -- NIC definition can be marshalled
+ instance Marshall NicDef where
+@@ -346,6 +354,8 @@ vmStartOnBootPriority = property "start_on_boot_priority"
+ vmStartFromSuspendImage = property "start-from-suspend-image"
+ vmShutdownPriority = property "shutdown-priority"
+ vmKeepAlive = property "keep-alive"
++vmProvidesDiskBackend = property "provides-disk-backend"
++vmProvidesDefaultDiskBackend = property "provides-default-disk-backend"
+ vmProvidesNetworkBackend = property "provides-network-backend"
+ vmProvidesDefaultNetworkBackend = property "provides-default-network-backend"
+ vmProvidesGraphicsFallback = property "provides-graphics-fallback"
+@@ -571,9 +581,11 @@ validDisks = filterM isDiskValid . allDisks
+ 
+ isDiskValid :: Disk -> Rpc Bool
+ isDiskValid disk =
+-    case diskType disk of
+-      VirtualHardDisk -> liftIO . doesFileExist $ diskPath disk
+-      _               -> return True
++  case diskBackendDomid disk of
++     Nothing -> case diskType disk of
++                   VirtualHardDisk -> liftIO . doesFileExist $ diskPath disk
++                   _               -> return True
++     _       -> return True
+ 
+ --build an xl config style disk list
+ diskSpecs :: VmConfig -> Rpc [DiskSpec]
+@@ -589,8 +601,8 @@ diskSpecs cfg = do
+ diskSpec :: Uuid -> Disk -> Rpc DiskSpec
+ diskSpec uuid d  = do
+   stubdom <- readConfigPropertyDef uuid vmStubdom False
+-  return $ printf "'%s,%s,%s,%s,%s,%s'"
+-             (diskPath d) (fileToRaw (enumMarshall $ diskType d)) (cdType stubdom d) (diskDevice d) (enumMarshall $ diskMode d) (if ((enumMarshall $ diskDeviceType d) == "cdrom") then (enumMarshall $ diskDeviceType d) else "")
++  return $ printf "'%s,%s,%s,%s,%s,backend=%d,%s'"
++             (diskPath d) (fileToRaw (enumMarshall $ diskType d)) (cdType stubdom d) (diskDevice d) (enumMarshall $ diskMode d) (fromMaybe 0 (diskBackendDomid d)) (if ((enumMarshall $ diskDeviceType d) == "cdrom") then (enumMarshall $ diskDeviceType d) else "")
+   where
+     cdType stubdom d =
+       case (enumMarshall $ diskDeviceType d) of
+diff --git a/xenmgr/Vm/DmTypes.hs b/xenmgr/Vm/DmTypes.hs
+index 808d958..d894f71 100644
+--- a/xenmgr/Vm/DmTypes.hs
++++ b/xenmgr/Vm/DmTypes.hs
+@@ -111,6 +111,9 @@ data Disk = Disk { diskPath :: FilePath
+                  , diskShared :: Bool
+                  , diskEnabled :: Bool
+                  , diskManagedType :: ManagedDiskType
++                 , diskBackendName :: Maybe String
++                 , diskBackendUuid :: Maybe Uuid
++                 , diskBackendDomid :: Maybe DomainID
+                  } deriving (Eq, Show)
+ 
+ type Sha1Sum = Integer
+diff --git a/xenmgr/Vm/Queries.hs b/xenmgr/Vm/Queries.hs
+index 331df66..3eed48c 100644
+--- a/xenmgr/Vm/Queries.hs
++++ b/xenmgr/Vm/Queries.hs
+@@ -33,6 +33,7 @@ module Vm.Queries
+                , getRunningHDX
+                , getGraphicsFallbackVm
+                , getDefaultNetworkBackendVm
++               , getDefaultDiskBackendVm
+                , getConfigCorruptionInfo
+                , getNic
+                , getVmNicDefs
+@@ -84,11 +85,11 @@ module Vm.Queries
+                , getVmVideoram, getVmPassthroughMmio, getVmPassthroughIo, getVmFlaskLabel
+                , getVmAcpiState, getVmHap, getVmSmbios, getVmDescription, getVmMeasured
+                , getVmExtraXenvm, getVmExtraHvm
+-               , getVmStartOnBootPriority, getVmKeepAlive, getVmProvidesNetworkBackend
++               , getVmStartOnBootPriority, getVmKeepAlive, getVmProvidesNetworkBackend, getVmProvidesDiskBackend
+                , getVmShutdownPriority, getVmProvidesGraphicsFallback
+                , getVmSeamlessId, getVmStartFromSuspendImage
+                , getVmQemuDmPath, getVmQemuDmTimeout
+-               , getVmDependencies
++               , getVmNetworkDependencies, getVmDiskDependencies, getVmDependencies
+                , getVmTrackDependencies
+                , getVmSeamlessMouseLeft, getVmSeamlessMouseRight
+                , getVmOs, getVmControlPlatformPowerState, getVmGreedyPcibackBind
+@@ -109,6 +110,7 @@ module Vm.Queries
+                , getVmOvfTransportIso
+                , getVmDownloadProgress
+                , getVmReady
++               , getVmProvidesDefaultDiskBackend
+                , getVmProvidesDefaultNetworkBackend
+                , getVmVkbd
+                , getVmVfb
+@@ -199,9 +201,15 @@ whenVmRunning uuid f = go =<< isRunning uuid
+     where go True = f
+           go _    = return ()
+ 
+--- iterate over configured devices and plug proper backend domid
+ plugBackendDomains :: VmConfig -> Rpc VmConfig
+ plugBackendDomains cfg =
++    do cfg_post_net <- plugNetworkBackendDomains cfg
++       cfg_post_disk <- plugDiskBackendDomains cfg_post_net
++       return cfg_post_disk
++
++-- iterate over configured devices and plug proper backend domid
++plugNetworkBackendDomains :: VmConfig -> Rpc VmConfig
++plugNetworkBackendDomains cfg =
+     do plugged <- mapM plugNic (vmcfgNics cfg)
+        return $ cfg { vmcfgNics = plugged }
+   where
+@@ -215,6 +223,19 @@ plugBackendDomains cfg =
+             domid <- getDomainID uuid
+             return $ nic { nicdefBackendDomid = domid }
+ 
++plugDiskBackendDomains :: VmConfig -> Rpc VmConfig
++plugDiskBackendDomains cfg =
++    do plugged <- mapM (plugDisk (vmcfgUuid cfg)) (vmcfgDisks cfg)
++       return $ cfg { vmcfgDisks = plugged }
++  where
++    plugDisk :: Uuid -> Disk -> Rpc Disk
++    plugDisk uuid disk = backendFromUuid disk =<< getVmDiskBackendUuid uuid disk
++        where
++          backendFromUuid disk Nothing = return disk
++          backendFromUuid disk (Just uuid) = do
++            domid <- getDomainID uuid
++            return $ disk { diskBackendDomid = domid }
++
+ getMaxVgpus :: Rpc Int
+ getMaxVgpus = vgpu <$> querySurfmanVgpuMode
+     where vgpu Nothing  = 0
+@@ -338,7 +359,11 @@ getVmStartupDisks uuid = do
+            , diskSnapshotMode = Nothing
+            , diskSha1Sum = Nothing
+            , diskShared = False
+-           , diskManagedType = UnmanagedDisk }
++           , diskManagedType = UnmanagedDisk
++           , diskBackendName = Nothing
++           , diskBackendUuid = Nothing
++           , diskBackendDomid = Nothing
++           }
+       
+ getVms :: (MonadRpc e m) => m [Uuid]
+ getVms = correctVms
+@@ -379,20 +404,77 @@ getAvailableVmNetworks nics
+          let nic_networks = map nicdefNetwork (filter nicdefEnable nics)
+          catMaybes <$> (mapM statNetwork $ intersect all_networks nic_networks)
+ 
+-getDependencyGraph :: Rpc (DepGraph Uuid)
+-getDependencyGraph =
++getDefaultDiskBackendVm :: Rpc (Maybe Uuid)
++getDefaultDiskBackendVm = do
++  vms <- getVmsBy getVmProvidesDefaultDiskBackend
++  case vms of
++     (uuid:_) -> return $ Just uuid
++     _        -> return Nothing
++
++getVmDiskBackendUuid :: Uuid -> Disk -> Rpc (Maybe Uuid)
++getVmDiskBackendUuid uuid disk = do
++   default_backend <- liftRpc getDefaultDiskBackendVm
++   case (diskBackendUuid disk, diskBackendName disk) of
++      (Nothing  , Nothing)   -> if uuid == (fromMaybe domain0uuid default_backend) then return Nothing else return default_backend
++      (Just uuid, _      )   -> return $ Just uuid
++      (Nothing  , Just name) ->
++         do vms <- getVmsBy (\vm -> (== name) <$> getVmName vm)
++            case vms of
++               (uuid:_) -> return $ Just uuid
++               _        -> return Nothing
++
++getDiskDependencyGraph :: Rpc (DepGraph Uuid)
++getDiskDependencyGraph =
++    do vms <- getVms
++       edges <- concat <$> mapM edge vms
++       return $ depgraphFromEdges edges
++    where
++      edge uuid =
++          do disks <- M.elems <$> getDisks uuid
++             backends <- nub . catMaybes <$> mapM (getVmDiskBackendUuid uuid) disks
++             return $ map (\dep -> (uuid,dep)) backends
++
++getVmDiskDependencies :: Uuid -> Rpc [Uuid]
++getVmDiskDependencies uuid =
++    do graph <- getDiskDependencyGraph
++       case dependencies uuid graph of
++         Nothing -> error "errors in disk dependency graph; check for cycles"
++         Just xs -> return xs
++
++getNetworkDependencyGraph :: Rpc (DepGraph Uuid)
++getNetworkDependencyGraph =
++    do vms <- getVms
++       edges <- concat <$> mapM edge vms
++       return $ depgraphFromEdges edges
++    where
++      edge uuid =
++          do nics <- getVmNicDefs' uuid
++             backends <- nub . catMaybes <$> mapM getVmNicBackendUuid nics
++             return $ map (\dep -> (uuid,dep)) backends
++
++getVmNetworkDependencies :: Uuid -> Rpc [Uuid]
++getVmNetworkDependencies uuid =
++    do graph <- getNetworkDependencyGraph
++       case dependencies uuid graph of
++         Nothing -> error "errors in network dependency graph; check for cycles"
++         Just xs -> return xs
++
++getFullDependencyGraph :: Rpc (DepGraph Uuid)
++getFullDependencyGraph =
+     do vms <- getVms
+        edges <- concat <$> mapM edge vms
+        return $ depgraphFromEdges edges
+     where
+       edge uuid =
+           do nics <- getVmNicDefs' uuid
++             disks <- M.elems <$> getDisks uuid
+              net_backends <- nub . catMaybes <$> mapM getVmNicBackendUuid nics
+-             return $ map (\dep -> (uuid,dep)) net_backends
++             disk_backends <- nub . catMaybes <$> mapM (getVmDiskBackendUuid uuid) disks
++             return $ map (\dep -> (uuid,dep)) (net_backends ++ disk_backends)
+ 
+ getVmDependencies :: Uuid -> Rpc [Uuid]
+ getVmDependencies uuid =
+-    do graph <- getDependencyGraph
++    do graph <- getFullDependencyGraph
+        case dependencies uuid graph of
+          Nothing -> error "errors in dependency graph; check for cycles"
+          Just xs -> return xs
+@@ -959,6 +1041,8 @@ getVmSmbios uuid = readConfigPropertyDef uuid vmSmbios ""
+ getVmDescription uuid = readConfigPropertyDef uuid vmDescription ""
+ getVmStartOnBootPriority uuid = readConfigPropertyDef uuid vmStartOnBootPriority (0::Int)
+ getVmKeepAlive uuid = readConfigPropertyDef uuid vmKeepAlive False
++getVmProvidesDiskBackend uuid = readConfigPropertyDef uuid vmProvidesDiskBackend False
++getVmProvidesDefaultDiskBackend uuid = readConfigPropertyDef uuid vmProvidesDefaultDiskBackend False
+ getVmProvidesNetworkBackend uuid = readConfigPropertyDef uuid vmProvidesNetworkBackend False
+ getVmProvidesDefaultNetworkBackend uuid = readConfigPropertyDef uuid vmProvidesDefaultNetworkBackend False
+ getVmMeasured uuid = readConfigPropertyDef uuid vmMeasured False
+diff --git a/xenmgr/XenMgr/Expose/VmDiskObject.hs b/xenmgr/XenMgr/Expose/VmDiskObject.hs
+index 4607d59..efc59ea 100644
+--- a/xenmgr/XenMgr/Expose/VmDiskObject.hs
++++ b/xenmgr/XenMgr/Expose/VmDiskObject.hs
+@@ -118,18 +118,20 @@ _Delete (ID vm_uuid disk_id) =
+        liftRpc $ unexpose vm_uuid disk_id
+ 
+ _GetBackendUuid :: ID -> Rpc String
+-_GetBackendUuid _ = return ""
++_GetBackendUuid id = fromMaybe "" . fmap show  <$> _get_field id diskBackendUuid
+ 
+ _SetBackendUuid :: ID -> String -> Vm ()
+-_SetBackendUuid _ _ =
+-    error "not implemented"
++_SetBackendUuid id uuid = _modify_disk id $ \d -> d { diskBackendName = case uuid of
++                                                                         "" -> Nothing
++                                                                         _  -> Just uuid }
+ 
+ _GetBackendName :: ID -> Rpc String
+-_GetBackendName _ = return ""
++_GetBackendName id = fromMaybe "" . fmap show  <$> _get_field id diskBackendName
+ 
+ _SetBackendName :: ID -> String -> Vm ()
+-_SetBackendName _ _ =
+-    error "not implemented"
++_SetBackendName id bname = _modify_disk id $ \d -> d { diskBackendName = case bname of
++                                                                           "" -> Nothing
++                                                                           _  -> Just bname }
+ 
+ _GetPhysPath :: ID -> Rpc (String)
+ _GetPhysPath id = _get_field id diskPath
+diff --git a/xenmgr/XenMgr/Expose/VmObject.hs b/xenmgr/XenMgr/Expose/VmObject.hs
+index bdab34f..9289065 100644
+--- a/xenmgr/XenMgr/Expose/VmObject.hs
++++ b/xenmgr/XenMgr/Expose/VmObject.hs
+@@ -239,6 +239,9 @@ implementationFor xm uuid = self where
+   , comCitrixXenclientXenmgrVmUnrestrictedSetKeepAlive = setVmKeepAlive uuid
+   , comCitrixXenclientXenmgrVmUnrestrictedGetProvidesNetworkBackend = getVmProvidesNetworkBackend uuid
+   , comCitrixXenclientXenmgrVmUnrestrictedSetProvidesNetworkBackend = setVmProvidesNetworkBackend uuid
++  , comCitrixXenclientXenmgrVmUnrestrictedGetProvidesDiskBackend = getVmProvidesDiskBackend uuid
++  , comCitrixXenclientXenmgrVmUnrestrictedSetProvidesDiskBackend = setVmProvidesDiskBackend uuid
++  
+   , comCitrixXenclientXenmgrVmUnrestrictedGetMeasured = getVmMeasured uuid
+   , comCitrixXenclientXenmgrVmUnrestrictedGetProvidesGraphicsFallback = getVmProvidesGraphicsFallback uuid
+   , comCitrixXenclientXenmgrVmUnrestrictedSetProvidesGraphicsFallback = \v -> setVmProvidesGraphicsFallback uuid v
+@@ -442,6 +445,8 @@ implementationFor xm uuid = self where
+   , comCitrixXenclientXenmgrVmSetKeepAlive = \v -> restrict >> setVmKeepAlive uuid v
+   , comCitrixXenclientXenmgrVmGetProvidesNetworkBackend = getVmProvidesNetworkBackend uuid
+   , comCitrixXenclientXenmgrVmSetProvidesNetworkBackend = \v -> restrict >> setVmProvidesNetworkBackend uuid v
++  , comCitrixXenclientXenmgrVmGetProvidesDiskBackend = getVmProvidesDiskBackend uuid
++  , comCitrixXenclientXenmgrVmSetProvidesDiskBackend = \v -> restrict >> setVmProvidesDiskBackend uuid v
+   , comCitrixXenclientXenmgrVmGetExtraXenvm = getVmExtraXenvm uuid
+   , comCitrixXenclientXenmgrVmSetExtraXenvm = \v -> restrict >> setVmExtraXenvm uuid v
+   , comCitrixXenclientXenmgrVmGetExtraHvm = getVmExtraHvm uuid
+@@ -590,6 +595,11 @@ implementationFor xm uuid = self where
+   , comCitrixXenclientXenmgrVmSetDownloadProgress = restrict' $ (setVmDownloadProgress uuid . fromIntegral)
+   , comCitrixXenclientXenmgrVmUnrestrictedSetDownloadProgress = setVmDownloadProgress uuid . fromIntegral
+ 
++  , comCitrixXenclientXenmgrVmGetProvidesDefaultDiskBackend = getVmProvidesDefaultDiskBackend uuid
++  , comCitrixXenclientXenmgrVmUnrestrictedGetProvidesDefaultDiskBackend = getVmProvidesDefaultDiskBackend uuid
++  , comCitrixXenclientXenmgrVmSetProvidesDefaultDiskBackend = restrict' $ setVmProvidesDefaultDiskBackend uuid
++  , comCitrixXenclientXenmgrVmUnrestrictedSetProvidesDefaultDiskBackend = setVmProvidesDefaultDiskBackend uuid
++
+   , comCitrixXenclientXenmgrVmGetProvidesDefaultNetworkBackend = getVmProvidesDefaultNetworkBackend uuid
+   , comCitrixXenclientXenmgrVmUnrestrictedGetProvidesDefaultNetworkBackend = getVmProvidesDefaultNetworkBackend uuid
+   , comCitrixXenclientXenmgrVmSetProvidesDefaultNetworkBackend = restrict' $ setVmProvidesDefaultNetworkBackend uuid
