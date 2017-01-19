@@ -1,0 +1,51 @@
+From 16fd19ad61f05d33e052f520a276f5d6c8373318 Mon Sep 17 00:00:00 2001
+From: mogrenp <mogrenp@ainfosec.com>
+Date: Thu, 8 Dec 2016 13:12:03 -0500
+Subject: [PATCH] Adds "provides-disk-backend" to interfaces and
+ "provides-defaul-disk-backend"
+
+---
+ interfaces/xenmgr_vm.xml | 20 ++++++++++++++++++--
+ 1 file changed, 18 insertions(+), 2 deletions(-)
+
+diff --git a/interfaces/xenmgr_vm.xml b/interfaces/xenmgr_vm.xml
+index 1021a0e..1ea110c 100644
+--- a/interfaces/xenmgr_vm.xml
++++ b/interfaces/xenmgr_vm.xml
+@@ -96,7 +96,15 @@
+     <property name="keep-alive" type="b" access="readwrite">
+       <tp:docstring>Automatically restart this VM if it shuts down or crashes.</tp:docstring>
+     </property>
+-    
++
++    <property name="provides-disk-backend" type="b" access="readwrite">
++      <tp:docstring>Whether this domain is a storage backend and contains the blkback driver.</tp:docstring>
++    </property>
++
++    <property name="provides-default-disk-backend" type="b" access="readwrite">
++      <tp:docstring>Whether this domain is the primary storage backend.</tp:docstring>
++    </property>
++
+     <property name="provides-network-backend" type="b" access="readwrite">
+       <tp:docstring>Whether this domain is a networking backend and handles the physical NIC devices.</tp:docstring>
+     </property>
+@@ -434,7 +442,15 @@
+     <property name="keep-alive" type="b" access="readwrite">
+       <tp:docstring>Automatically restart this VM if it shuts down or crashes.</tp:docstring>
+     </property>
+-    
++
++   <property name="provides-disk-backend" type="b" access="readwrite">
++      <tp:docstring>Whether this domain is a storage backend and contains the blkback driver.</tp:docstring>
++    </property>
++
++    <property name="provides-default-disk-backend" type="b" access="readwrite">
++      <tp:docstring>Whether this domain is the primary storage backend.</tp:docstring>
++    </property>
++
+     <property name="provides-network-backend" type="b" access="readwrite">
+       <tp:docstring>Whether this domain is a networking backend and handles the physical nic devices.</tp:docstring>
+     </property>
+-- 
+2.7.4
+
