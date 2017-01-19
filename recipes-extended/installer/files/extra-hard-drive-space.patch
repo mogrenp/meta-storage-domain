@@ -1,0 +1,25 @@
+From b2f513dd86c2f3eed1beea19bad811c323be6480 Mon Sep 17 00:00:00 2001
+From: mogrenp <mogrenp@ainfosec.com>
+Date: Thu, 19 Jan 2017 11:04:45 -0500
+Subject: [PATCH] Make extra space on the hard drive for the storager-domain's
+ rootfs
+
+---
+ part2/stages/Functions/install-main | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/part2/stages/Functions/install-main b/part2/stages/Functions/install-main
+index 06771ad..51f0839 100644
+--- a/part2/stages/Functions/install-main
++++ b/part2/stages/Functions/install-main
+@@ -31,6 +31,7 @@ mk_xc_lvm()
+     do_cmd lvcreate --name swap     --size 256M /dev/xenclient || return 1
+     do_cmd lvcreate --name log      --size  64M /dev/xenclient || return 1
+     do_cmd lvcreate --name cores    --size  64M /dev/xenclient || return 1
++    do_cmd lvcreate --name storage-rootfs --size 1.5G /dev/xenclient || return 1
+     do_cmd lvcreate --name storage -l +100%FREE  /dev/xenclient || return 1
+     do_cmd lvresize -f /dev/xenclient/storage -L-1G || return 1
+ 
+-- 
+2.7.4
+
